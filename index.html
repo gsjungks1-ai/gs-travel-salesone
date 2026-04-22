@@ -166,18 +166,6 @@
 </style>
 </head>
 <body>
-<script>
-  const correct = "gstravel";
-  const entered = sessionStorage.getItem("auth");
-  if (entered !== correct) {
-    const input = prompt("🔒 비밀번호를 입력하세요:");
-    if (input === correct) {
-      sessionStorage.setItem("auth", correct);
-    } else {
-      document.body.innerHTML = "<h2 style='text-align:center;margin-top:20%'>❌ 접근 권한이 없습니다.</h2>";
-    }
-  }
-</script>
  <div class="container">
   <h1>여행가격 GS샵 변환기</h1>
   <p class="subtitle">여행사 엑셀표 → GS샵 웹 게시 양식 자동 변환 · 중복 날짜 자동 검출</p>
