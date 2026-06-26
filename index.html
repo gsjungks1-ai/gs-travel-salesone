@@ -166,7 +166,7 @@
 </style>
 </head>
 <body>
- <div class="container">
+<div class="container">
   <h1>여행가격 GS샵 변환기</h1>
   <p class="subtitle">여행사 엑셀표 → GS샵 웹 게시 양식 자동 변환 · 중복 날짜 자동 검출</p>
 
@@ -465,26 +465,52 @@ function parseProductA(product, flaggedCells) {
     return null;
   }
 
-  const priceLine = lines[lines.length - 1];
-  const priceTokens = priceLine.split('\t')
-    .map(t => t.replace(/^"|"$/g,'').replace(/[^0-9,]/g,'').trim())
-    .filter(t => /\d{3}/.test(t));
-  const maxCols = priceTokens.length;
-  if (maxCols === 0) return null;
-  const dateLines = lines.slice(0, lines.length - 1);
-  const cols = [];
-  for (let i = 0; i < maxCols; i++) cols.push([]);
-  dateLines.forEach(line => {
-    const tokens = line.split('\t');
-    for (let i = 0; i < maxCols; i++) {
-      const val = (tokens[i]||'').replace(/^"|"$/g,'').trim();
-      if (val) cols[i].push(val);
+  // 가격행 판별: 탭으로 구분된 셀들이 모두 숫자(,포함) 또는 빈값이고,
+  // 숫자 셀이 1개 이상이며 날짜(슬래시/월) 패턴이 없는 행
+  function isPriceLine(line) {
+    const tokens = line.split('\t').map(t => t.replace(/^"|"$/g,'').trim());
+    const nonEmpty = tokens.filter(t => t !== '');
+    if (nonEmpty.length === 0) return false;
+    const allNumeric = nonEmpty.every(t => /^\d[\d,]*$/.test(t) && t.replace(/,/g,'').length >= 3);
+    const hasDate = nonEmpty.some(t => /\d+\/\d+|\d+월/.test(t));
+    return allNumeric && !hasDate;
+  }
+
+  // 날짜행-가격행 쌍을 순서대로 수집
+  const allPriceGroups = [];
+  let pendingDateLines = [];
+
+  lines.forEach(line => {
+    if (!line.trim()) return;
+    if (isPriceLine(line)) {
+      // 가격행 발견 → 직전까지 쌓인 날짜행들과 묶어서 그룹 생성
+      const priceTokens = line.split('\t')
+        .map(t => t.replace(/^"|"$/g,'').replace(/[^0-9,]/g,'').trim());
+      const maxCols = priceTokens.length;
+      const cols = [];
+      for (let i = 0; i < maxCols; i++) cols.push([]);
+      pendingDateLines.forEach(dl => {
+        const tokens = dl.split('\t');
+        for (let i = 0; i < maxCols; i++) {
+          const val = (tokens[i]||'').replace(/^"|"$/g,'').trim();
+          if (val) cols[i].push(val);
+        }
+      });
+      priceTokens.forEach((price, i) => {
+        if (!isNumericPrice(price)) return;
+        const raw = cols[i].join('\n');
+        const dates = parseDatesRaw(raw, flaggedCells);
+        const expandedDates = parseDatesExpanded(raw);
+        if (expandedDates.length > 0) allPriceGroups.push({ price, dates, expandedDates });
+      });
+      pendingDateLines = []; // 날짜행 버퍼 초기화
+    } else {
+      // 날짜행 → 버퍼에 추가
+      pendingDateLines.push(line);
     }
   });
-  return priceTokens.map((price, i) => {
-    const raw = cols[i].join('\n');
-    return { price, dates: parseDatesRaw(raw, flaggedCells), expandedDates: parseDatesExpanded(raw) };
-  });
+
+  return allPriceGroups.length > 0 ? allPriceGroups : null;
 }
 
 function parseProductBStyle(lines, flaggedCells) {
