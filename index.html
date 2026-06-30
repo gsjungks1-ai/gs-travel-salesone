@@ -99,6 +99,30 @@
   }
   .toggle-btn:hover { background: #f0f0f0; }
 
+  .output-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .mode-btn {
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid #ccc;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .mode-btn:hover { background: #f5f5f5; }
+  .mode-btn.active {
+    background: #222;
+    color: #fff;
+    border-color: #222;
+  }
+
   .btn-row { display: flex; gap: 8px; margin-top: 14px; }
   button.primary {
     padding: 9px 20px;
@@ -201,6 +225,13 @@
 
   <div class="card">
     <div class="card-title">GS샵 웹 양식 출력</div>
+
+    <div class="output-mode-row">
+      <span class="detect-label">출력 양식</span>
+      <button id="modeBtnMulti" class="mode-btn active" onclick="setOutputMode('multi')">기본 (가격행별 표시)</button>
+      <button id="modeBtnSingle" class="mode-btn" onclick="setOutputMode('single')">한 줄 요약 (출발일 : ... 성인,아동 : ...)</button>
+    </div>
+
     <div class="output-wrap">
       <div id="output" class="placeholder">변환 결과가 여기에 표시됩니다.</div>
       <button class="copy-btn" onclick="copyOutput()">복사</button>
@@ -212,6 +243,16 @@
 /* ── 상태 ── */
 let detectedFormat = null; // 'A' | 'B'
 let selectedFormat = null; // 'A' | 'B' (수동 변경 시)
+let outputMode = 'multi';  // 'multi' | 'single'
+let lastConvertedBlocks = null; // 마지막 변환 결과 (모드 전환 시 재사용)
+// lastConvertedBlocks: [{ name, priceGroups, notes, adultChildDiff }]
+
+function setOutputMode(mode) {
+  outputMode = mode;
+  document.getElementById('modeBtnMulti').classList.toggle('active', mode === 'multi');
+  document.getElementById('modeBtnSingle').classList.toggle('active', mode === 'single');
+  if (lastConvertedBlocks) renderOutput(lastConvertedBlocks);
+}
 
 /* ── 형식 감지 및 UI 업데이트 ── */
 function detectFormat() {
@@ -407,8 +448,8 @@ function isNumericPrice(str) {
   return /^\d[\d,]*$/.test(str) && str.replace(/,/g,'').length >= 3;
 }
 
-/* ── 출력 블록 생성 ── */
-function buildOutput(name, priceGroups, notes, adultChildDiff) {
+/* ── 출력 블록 생성 (기본: 가격행별 표시) ── */
+function buildOutputMulti(name, priceGroups, notes, adultChildDiff) {
   let block = name ? '[' + name + ']\n' : '';
   const valid = priceGroups.filter(g => (g.expandedDates || g.dates || []).length > 0);
   let firstDone = false;
@@ -423,6 +464,53 @@ function buildOutput(name, priceGroups, notes, adultChildDiff) {
     block += '\n' + notes.join('\n');
   }
   return block.trim();
+}
+
+/* ── 출력 블록 생성 (한 줄 요약: 출발일 : ... 성인,아동 : ...) ── */
+function buildOutputSingle(name, priceGroups, notes, adultChildDiff) {
+  let block = name ? '[' + name + ']\n' : '';
+  block += (adultChildDiff ? '*성인/아동 가격 상이' : '*성인/아동 가격 동일') + '\n';
+
+  const valid = priceGroups.filter(g => (g.expandedDates || g.dates || []).length > 0);
+  valid.forEach((g) => {
+    // 날짜를 월별로 묶어 "8/6 9/3,10,17 10/11,15" 형태로 한 줄 생성
+    const byMonth = {};
+    g.dates.forEach(d => {
+      if (!byMonth[d.month]) byMonth[d.month] = [];
+      byMonth[d.month].push(d.rawText);
+    });
+    const dateStr = Object.keys(byMonth).sort((a,b)=>a-b)
+      .map(m => m + '/' + byMonth[m].join(',')).join(' ');
+
+    const priceLabel = adultChildDiff
+      ? ('성인 : ' + g.price + '원, 아동 : ' + (g.childPrice || '?') + '원')
+      : ('성인,아동 : ' + g.price + '원');
+
+    block += '출발일 : ' + dateStr + '     ' + priceLabel + '\n';
+  });
+
+  const otherNotes = (notes || []).filter(n => !/성인\/아동/.test(n));
+  if (otherNotes.length > 0) {
+    block += otherNotes.join('\n');
+  }
+  return block.trim();
+}
+
+function buildOutput(mode, name, priceGroups, notes, adultChildDiff) {
+  return mode === 'single'
+    ? buildOutputSingle(name, priceGroups, notes, adultChildDiff)
+    : buildOutputMulti(name, priceGroups, notes, adultChildDiff);
+}
+
+/* ── 변환 결과를 현재 모드로 화면에 그리기 ── */
+function renderOutput(blocks) {
+  const fullResult = blocks.map(b =>
+    buildOutput(outputMode, b.name, b.priceGroups, b.notes, b.adultChildDiff)
+  ).join('\n\n');
+
+  const outputEl = document.getElementById('output');
+  outputEl.classList.remove('placeholder');
+  outputEl.textContent = fullResult || '변환된 내용이 없습니다.';
 }
 
 /* ── 형식 A 파싱 ── */
@@ -546,7 +634,8 @@ function parseProductBStyle(lines, flaggedCells) {
       const raw = block.dateCells[i];
       const dates = parseDatesRaw(raw, flaggedCells);
       const expandedDates = parseDatesExpanded(raw);
-      if (expandedDates.length > 0) allPriceGroups.push({ price, dates, expandedDates });
+      const childPrice = (block.childTokens && isNumericPrice(block.childTokens[i])) ? block.childTokens[i] : null;
+      if (expandedDates.length > 0) allPriceGroups.push({ price, dates, expandedDates, childPrice });
     }
     if (block.childTokens) {
       anyChild = true;
@@ -612,7 +701,8 @@ function parseFormatB(lines, flaggedCells) {
       const raw = block.dateCells[i];
       const dates = parseDatesRaw(raw, flaggedCells);
       const expandedDates = parseDatesExpanded(raw);
-      if (expandedDates.length > 0) allPriceGroups.push({ price, dates, expandedDates });
+      const childPrice = (block.childTokens && isNumericPrice(block.childTokens[i])) ? block.childTokens[i] : null;
+      if (expandedDates.length > 0) allPriceGroups.push({ price, dates, expandedDates, childPrice });
     }
     if (block.childTokens) {
       anyChild = true;
@@ -641,7 +731,7 @@ function convert() {
   const lines = normalizeExcelPaste(raw);
   const alertList = document.getElementById('alertList');
   alertList.innerHTML = '';
-  let fullResult = '';
+  const blocks = []; // { name, priceGroups, notes, adultChildDiff }
   const flaggedCells = [];
 
   function showFlaggedWarning() {
@@ -666,7 +756,7 @@ function convert() {
     } else {
       showAlert('info', '✓ 중복 날짜 없음');
     }
-    fullResult = buildOutput('', priceGroups, notes, adultChildDiff);
+    blocks.push({ name: '', priceGroups, notes, adultChildDiff });
 
   } else {
     const products = splitIntoProductsA(lines);
@@ -688,15 +778,14 @@ function convert() {
       } else {
         showAlert('info', '✓ [' + product.name + '] 중복 날짜 없음');
       }
-      fullResult += (fullResult ? '\n\n' : '') + buildOutput(product.name, priceGroups, notes, adultChildDiff);
+      blocks.push({ name: product.name, priceGroups, notes, adultChildDiff });
     });
   }
 
   showFlaggedWarning();
 
-  const outputEl = document.getElementById('output');
-  outputEl.classList.remove('placeholder');
-  outputEl.textContent = fullResult || '변환된 내용이 없습니다.';
+  lastConvertedBlocks = blocks;
+  renderOutput(blocks);
 }
 
 function showAlert(type, msg) {
@@ -734,6 +823,7 @@ function clearAll() {
   document.getElementById('detectRow').classList.remove('visible');
   detectedFormat = null;
   selectedFormat = null;
+  lastConvertedBlocks = null;
 }
 </script>
 </body>
